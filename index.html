@@ -179,7 +179,7 @@ async function createFirm(){
   const {data:existing}=await db.from("firms").select("id").eq("invite_code",code).single();
   if(existing){showToast("That invite code is already taken. Choose another.","error");return;}
   const {data:firm,error}=await db.from("firms").insert({name,logo_url:logo,primary_color:primary,name_color:nameColor,invite_code:code,created_by:S.session.user.id}).select().single();
-  if(error){showToast("Failed to create firm.","error");return;}
+  if(error){showToast("Error: "+error.message,"error");return;}
   await db.from("firm_members").insert({firm_id:firm.id,user_id:S.session.user.id,role:"admin"});
   set({showCreateFirm:false,newFirmName:"",newFirmCode:"",newFirmLogo:"",newFirmColor:"#1E293B",newFirmPrimary:"#4361EE"});
   await loadFirms();
