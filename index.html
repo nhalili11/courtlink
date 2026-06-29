@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CourtLink — Legal Calendar</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font-family:'Nunito',sans-serif;background:#F0F4FE}
+button{cursor:pointer;font-family:'Nunito',sans-serif}
+input,select,textarea{font-family:'Nunito',sans-serif;resize:vertical}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:99px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// ─── CONFIG — fill these in after Supabase setup ───────────────────────────
+const SUPABASE_URL  = "YOUR_SUPABASE_URL";
+const SUPABASE_KEY  = "YOUR_SUPABASE_ANON_KEY";
+const FIRM_CODE     = "YOUR_FIRM_CODE"; // e.g. "SMITHLAW2025"
+// ───────────────────────────────────────────────────────────────────────────
+
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const C = {
+  bg:"#F0F4FE", sidebar:"#FFFFFF", card:"#FFFFFF",
+  primary:"#4361EE", primaryL:"#EEF2FF",
+  text:"#1E293B", muted:"#64748B", border:"#E2E8F0",
+  red:"#EF4444", redL:"#FEF2F2",
+  green:"#10B981", greenL:"#ECFDF5"
+};
+
+const HEARING = {
+  bail:        {label:"Bail Hearing",        color:"#D97706", bg:"#FFFBEB"},
+  trial:       {label:"Trial",               color:"#DC2626", bg:"#FEF2F2"},
+  sentencing:  {label:"Sentencing",          color:"#7C3AED", bg:"#F5F3FF"},
+  preliminary: {label:"Preliminary Inquiry", color:"#2563EB", bg:"#EFF6FF"},
+  plea:        {label:"Plea Hearing",        color:"#059669", bg:"#ECFDF5"},
+  motion:      {label:"Motion",              color:"#0891B2", bg:"#ECFEFF"},
+  remand:      {label:"Remand",              color:"#EA580C", bg:"#FFF7ED"},
+  other:       {label:"Other",               color:"#64748B", bg:"#F8FAFC"},
+};
+
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+const uid       = () => Math.random().toString(36).slice(2,10);
+const getDays   = (y,m) => new Date(y,m+1,0).getDate();
+const getFirst  = (y,m) => new Date(y,m,1).getDay();
+const todayStr  = new Date().toISOString().split("T")[0];
+const fmtDate   = s => s ? new Date(s+"T12:00:00").toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric",year:"numeric"}) : "";
+
+const now = new Date();
+
+let S = {
+  // auth
+  session: null, profile: null,
+  authMode: "login", authEmail:"", authPassword:"", authCode:"", authName:"", authError:"", authLoading:false,
+  // app
+  view:"calendar", events:[], yr:now.getFullYear(), mo:now.getMonth(),
+  sidebarOpen:true, selectedEvent:null, showAdd:false,
+  addForm:{clientName:"",clientFile:"",date:todayStr,time:"09:00",hearingType:"bail",jurisdiction:"",courthouse:"",courtroom:"",judge:"",attendees:"all",notes:""},
+  // settings
+  settingsTab:"roles",
+  // ui
+  toast:null,
+};
+
+function set(p){Object.assign(S,p);render();}
+function showToast(msg, type="success"){
+  S.toast={msg,type};render();
+  setTimeout(()=>{S.toast=null;render();},3000);
+}
+
+// ─── AUTH ──────────────────────────────────────────────────────────────────
+
+async function signUp(){
+  const {authEmail:email,authPassword:pass,authCode:code,authName:name}=S;
+  if(!email||!pass||!code||!name){set({authError:"All fields are required."});return;}
+  if(code.trim().toUpperCase()!==FIRM_CODE.trim().toUpperCase()){set({authError:"Invalid firm access code."});return;}
+  set({authLoading:true,authError:""});
+  const {data,error}=await db.auth.signUp({email,password:pass,options:{data:{full_name:name}}});
+  if(error){set({authLoading:false,authError:error.message});return;}
+  // profile created by trigger, but create manually as fallback
+  if(data.user){
+    await db.from("profiles").upsert({id:data.user.id,email,full_name:name,role:"lawyer"},{onConflict:"id"});
+  }
+  set({authLoading:false,authError:"",authMode:"verify"});
+}
+
+async function signIn(){
+  const {authEmail:email,authPassword:pass}=S;
+  if(!email||!pass){set({authError:"Email and password required."});return;}
+  set({authLoading:true,authError:""});
+  const {data,error}=await db.auth.signInWithPassword({email,password:pass});
+  if(error){set({authLoading:false,authError:error.message});return;}
+  set({authLoading:false});
+}
+
+async function signOut(){
+  await db.auth.signOut();
+  set({session:null,profile:null,events:[],view:"calendar"});
+}
+
+// ─── DATA ──────────────────────────────────────────────────────────────────
+
+async function loadEvents(){
+  const {data,error}=await db.from("events").select("*").order("date",{ascending:true});
+  if(!error) set({events:data||[]});
+}
+
+async function loadProfile(userId){
+  const {data}=await db.from("profiles").select("*").eq("id",userId).single();
+  if(data) set({profile:data});
+}
+
+async function addEvent(){
+  const f=S.addForm;
+  if(!f.clientName||!f.date){showToast("Client name and date are required.","error");return;}
+  const evt={
+    id:uid(), client_name:f.clientName, client_file:f.clientFile,
+    date:f.date, time:f.time, hearing_type:f.hearingType,
+    jurisdiction:f.jurisdiction, courthouse:f.courthouse,
+    courtroom:f.courtroom, judge:f.judge, attendees:f.attendees,
+    notes:f.notes, created_by:S.session.user.id
+  };
+  const {error}=await db.from("events").insert(evt);
+  if(error){showToast("Failed to save event.","error");return;}
+  S.showAdd=false;
+  S.addForm={clientName:"",clientFile:"",date:todayStr,time:"09:00",hearingType:"bail",jurisdiction:"",courthouse:"",courtroom:"",judge:"",attendees:"all",notes:""};
+  showToast("Event added to calendar!");
+}
+
+async function deleteEvent(id){
+  if(S.profile?.role==="viewer"){showToast("You don't have permission to delete events.","error");return;}
+  await db.from("events").delete().eq("id",id);
+  set({selectedEvent:null});
+  showToast("Event removed.");
+}
+
+async function updateRole(userId, role){
+  await db.from("profiles").update({role}).eq("id",userId);
+  showToast("Role updated.");
+  loadAllProfiles();
+}
+
+let allProfiles=[];
+async function loadAllProfiles(){
+  const {data}=await db.from("profiles").select("*").order("full_name");
+  allProfiles=data||[];render();
+}
+
+// ─── REALTIME ──────────────────────────────────────────────────────────────
+
+function subscribeRealtime(){
+  db.channel("events-changes")
+    .on("postgres_changes",{event:"*",schema:"public",table:"events"},()=>loadEvents())
+    .subscribe();
+}
+
+// ─── INIT ──────────────────────────────────────────────────────────────────
+
+async function init(){
+  const {data:{session}}=await db.auth.getSession();
+  if(session){
+    S.session=session;
+    await loadProfile(session.user.id);
+    await loadEvents();
+    subscribeRealtime();
+  }
+  render();
+
+  db.auth.onAuthStateChange(async(_,session)=>{
+    S.session=session;
+    if(session){
+      await loadProfile(session.user.id);
+      await loadEvents();
+      subscribeRealtime();
+    }
+    render();
+  });
+}
+
+// ─── NAV ───────────────────────────────────────────────────────────────────
+
+const NAV=[
+  {id:"calendar",label:"Calendar",   ico:`<svg width=17 height=17 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`},
+  {id:"agenda",  label:"Agenda",     ico:`<svg width=17 height=17 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="3" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg>`},
+  {id:"clients", label:"Clients",    ico:`<svg width=17 height=17 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`},
+  {id:"settings",label:"Settings",   ico:`<svg width=17 height=17 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`},
+];
+
+// ─── VIEWS ─────────────────────────────────────────────────────────────────
+
+function authView(){
+  const {authMode:mode,authEmail:email,authPassword:pass,authCode:code,authName:name,authError:err,authLoading:loading}=S;
+
+  if(mode==="verify") return `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:${C.bg}">
+      <div style="background:${C.card};border-radius:20px;padding:44px;width:420px;border:1px solid ${C.border};text-align:center">
+        <div style="width:56px;height:56px;background:${C.primaryL};border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 20px">
+          <svg width=26 height=26 viewBox="0 0 24 24" fill="none" stroke="${C.primary}" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2,4 12,13 22,4"/></svg>
+        </div>
+        <div style="font-size:20px;font-weight:800;color:${C.text};margin-bottom:8px">Check your email</div>
+        <div style="font-size:14px;color:${C.muted};line-height:1.6">We sent a confirmation link to <strong>${email}</strong>. Click it to activate your account, then come back to sign in.</div>
+        <button onclick="set({authMode:'login',authError:''})" style="margin-top:24px;padding:10px 24px;background:${C.primary};color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px">Back to Sign In</button>
+      </div>
+    </div>`;
+
+  return `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:${C.bg}">
+      <div style="background:${C.card};border-radius:20px;padding:44px;width:420px;border:1px solid ${C.border}">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:28px">
+          <div style="width:40px;height:40px;background:${C.primary};border-radius:12px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(67,97,238,.28)">
+            <svg width=20 height=20 viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+          </div>
+          <div>
+            <div style="font-size:18px;font-weight:800;color:${C.text}">CourtLink</div>
+            <div style="font-size:11px;color:${C.muted};font-weight:700;letter-spacing:.5px">LEGAL CALENDAR</div>
+          </div>
+        </div>
+
+        <div style="font-size:22px;font-weight:800;color:${C.text};margin-bottom:4px">${mode==="login"?"Welcome back":"Create your account"}</div>
+        <div style="font-size:13px;color:${C.muted};margin-bottom:24px;font-weight:500">${mode==="login"?"Sign in to your firm's calendar":"Sign up with your firm's access code"}</div>
+
+        ${err?`<div style="padding:11px 14px;background:${C.redL};border:1px solid #FCA5A5;border-radius:9px;color:${C.red};font-size:13px;font-weight:600;margin-bottom:16px">${err}</div>`:""}
+
+        <div style="display:flex;flex-direction:column;gap:12px">
+          ${mode==="signup"?`
+          <div>
+            <label style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.4px;text-transform:uppercase">Full Name</label>
+            <input type="text" value="${name}" oninput="S.authName=this.value" placeholder="Jane Smith" style="width:100%;margin-top:4px;padding:10px 12px;border:1.5px solid ${C.border};border-radius:9px;background:${C.bg};color:${C.text};font-size:14px;font-weight:500">
+          </div>`:""}
+          <div>
+            <label style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.4px;text-transform:uppercase">Email</label>
+            <input type="email" value="${email}" oninput="S.authEmail=this.value" placeholder="you@lawfirm.com" style="width:100%;margin-top:4px;padding:10px 12px;border:1.5px solid ${C.border};border-radius:9px;background:${C.bg};color:${C.text};font-size:14px;font-weight:500">
+          </div>
+          <div>
+            <label style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.4px;text-transform:uppercase">Password</label>
+            <input type="password" value="${pass}" oninput="S.authPassword=this.value" placeholder="••••••••" style="width:100%;margin-top:4px;padding:10px 12px;border:1.5px solid ${C.border};border-radius:9px;background:${C.bg};color:${C.text};font-size:14px;font-weight:500">
+          </div>
+          ${mode==="signup"?`
+          <div>
+            <label style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.4px;text-transform:uppercase">Firm Access Code</label>
+            <input type="text" value="${code}" oninput="S.authCode=this.value" placeholder="Enter your firm's code" style="width:100%;margin-top:4px;padding:10px 12px;border:1.5px solid ${C.border};border-radius:9px;background:${C.bg};color:${C.text};font-size:14px;font-weight:500">
+            <div style="font-size:11px;color:${C.muted};margin-top:4px;font-weight:500">Ask your administrator for the access code.</div>
+          </div>`:""}
+        </div>
+
+        <button onclick="${mode==="login"?"signIn()":"signUp()"}" ${loading?"disabled":""} style="width:100%;margin-top:20px;padding:12px;background:${C.primary};color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;box-shadow:0 2px 8px rgba(67,97,238,.28)">
+          ${loading?"Please wait...":(mode==="login"?"Sign In →":"Create Account")}
+        </button>
+
+        <div style="text-align:center;margin-top:18px;font-size:13px;color:${C.muted};font-weight:500">
+          ${mode==="login"
+            ?`Don't have an account? <button onclick="set({authMode:'signup',authError:''})" style="background:none;border:none;color:${C.primary};font-weight:700;font-size:13px">Sign up</button>`
+            :`Already have an account? <button onclick="set({authMode:'login',authError:''})" style="background:none;border:none;color:${C.primary};font-weight:700;font-size:13px">Sign in</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
+function sidebar(){
+  const o=S.sidebarOpen;
+  const role=S.profile?.role||"lawyer";
+  const roleColors={admin:C.primary,lawyer:"#D97706",viewer:C.muted};
+  const roleLabels={admin:"Admin",lawyer:"Lawyer",viewer:"Viewer"};
+  return`<div style="width:${o?222:56}px;transition:width .2s;background:${C.sidebar};border-right:1px solid ${C.border};display:flex;flex-direction:column;flex-shrink:0;overflow:hidden">
+    <div style="padding:16px ${o?14:10}px 14px;border-bottom:1px solid ${C.border};display:flex;align-items:center;gap:10px">
+      <div style="width:32px;height:32px;background:${C.primary};border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 8px rgba(67,97,238,.28)">
+        <svg width=16 height=16 viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+      </div>
+      ${o?`<div><div style="font-size:15px;font-weight:800;color:${C.text};letter-spacing:-.3px">CourtLink</div><div style="font-size:10px;color:${C.muted};font-weight:700;letter-spacing:.6px;margin-top:1px">LEGAL CALENDAR</div></div>`:""}
+    </div>
+    <nav style="flex:1;padding:10px ${o?8:5}px">
+      ${NAV.map(n=>{const a=S.view===n.id;return`<button onclick="set({view:'${n.id}'})" title="${n.label}" style="display:flex;align-items:center;gap:10px;width:100%;padding:9px ${o?12:9}px;border:none;border-radius:9px;background:${a?C.primaryL:"transparent"};color:${a?C.primary:C.muted};font-size:13px;font-weight:${a?700:500};margin-bottom:2px;text-align:left;transition:all .12s">${n.ico}${o?`<span style="white-space:nowrap">${n.label}</span>`:""}</button>`;}).join("")}
+    </nav>
+    ${o?`<div style="padding:12px 14px;border-top:1px solid ${C.border}">
+      <div style="font-size:12px;font-weight:700;color:${C.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${S.profile?.full_name||S.session?.user?.email||""}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px">
+        <span style="font-size:11px;font-weight:700;color:${roleColors[role]};background:${roleColors[role]}18;padding:2px 8px;border-radius:99px;text-transform:uppercase;letter-spacing:.5px">${roleLabels[role]||role}</span>
+        <button onclick="signOut()" title="Sign out" style="background:none;border:none;color:${C.muted};font-size:11px;font-weight:600;padding:2px 6px;border-radius:6px">Sign out</button>
+      </div>
+    </div>`:`<button onclick="signOut()" title="Sign out" style="padding:11px;background:transparent;border:none;border-top:1px solid ${C.border};color:${C.muted};display:flex;align-items:center;justify-content:center"><svg width=15 height=15 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>`}
+    <button onclick="set({sidebarOpen:${!o}})" style="padding:11px;background:transparent;border:none;border-top:1px solid ${C.border};color:${C.muted};display:flex;align-items:center;justify-content:${o?"flex-end":"center"}">
+      ${o?`<svg width=15 height=15 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15,18 9,12 15,6"/></svg>`:`<svg width=15 height=15 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9,18 15,12 9,6"/></svg>`}
+    </button>
+  </div>`;
+}
+
+function topbar(){
+  const {view,yr,mo}=S;
+  const canEdit=["admin","lawyer"].includes(S.profile?.role);
+  const vL={agenda:"Agenda",clients:"Clients",settings:"Settings"};
+  return`<div style="padding:12px 20px;background:${C.card};border-bottom:1px solid ${C.border};display:flex;align-items:center;gap:14px;flex-shrink:0">
+    ${view==="calendar"?`<div style="display:flex;align-items:center;gap:8px">
+      <button onclick="navMonth(-1)" style="width:29px;height:29px;border:1px solid ${C.border};border-radius:8px;background:transparent;display:flex;align-items:center;justify-content:center;color:${C.text}"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15,18 9,12 15,6"/></svg></button>
+      <span style="font-size:15px;font-weight:800;min-width:166px;text-align:center;color:${C.text}">${MONTHS[mo]} ${yr}</span>
+      <button onclick="navMonth(1)" style="width:29px;height:29px;border:1px solid ${C.border};border-radius:8px;background:transparent;display:flex;align-items:center;justify-content:center;color:${C.text}"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9,18 15,12 9,6"/></svg></button>
+    </div>`:`<span style="font-size:15px;font-weight:800;color:${C.text}">${vL[view]||""}</span>`}
+    <div style="flex:1"></div>
+    ${canEdit?`<button onclick="set({showAdd:true})" style="display:flex;align-items:center;gap:6px;padding:8px 15px;background:${C.primary};color:#fff;border:none;border-radius:9px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(67,97,238,.28)"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Event</button>`:""}
+  </div>`;
+}
+
+function navMonth(d){let m=S.mo+d,y=S.yr;if(m<0){m=11;y--;}if(m>11){m=0;y++;}set({mo:m,yr:y});}
+
+function evtFromRow(row){
+  return{
+    id:row.id, clientName:row.client_name, clientFile:row.client_file,
+    date:row.date, time:row.time, hearingType:row.hearing_type,
+    jurisdiction:row.jurisdiction, courthouse:row.courthouse,
+    courtroom:row.courtroom, judge:row.judge, attendees:row.attendees,
+    notes:row.notes, source:"db"
+  };
+}
+
+function calendarView(){
+  const {events,yr,mo}=S;
+  const total=getDays(yr,mo),first=getFirst(yr,mo);
+  const cells=[];
+  for(let i=0;i<first;i++)cells.push(null);
+  for(let d=1;d<=total;d++)cells.push(d);
+  while(cells.length%7!==0)cells.push(null);
+  const evtsOn=d=>{
+    const ds=`${yr}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    return events.filter(e=>e.date===ds).sort((a,b)=>a.time?.localeCompare(b.time));
+  };
+  return`<div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px">
+      ${DAYS.map(d=>`<div style="text-align:center;font-size:11px;font-weight:700;color:${C.muted};padding:5px 0;letter-spacing:.4px">${d}</div>`).join("")}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">
+      ${cells.map(day=>{
+        if(!day)return`<div style="min-height:105px"></div>`;
+        const ds=`${yr}-${String(mo+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+        const isToday=ds===todayStr;
+        const de=evtsOn(day);
+        return`<div style="min-height:105px;background:${C.card};border-radius:10px;padding:6px 5px;border:1.5px solid ${isToday?C.primary:C.border}">
+          <div style="width:24px;height:24px;border-radius:50%;background:${isToday?C.primary:"transparent"};color:${isToday?"#fff":C.text};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:${isToday?800:600};margin-bottom:3px">${day}</div>
+          ${de.slice(0,3).map(row=>{const evt=evtFromRow(row);const h=HEARING[evt.hearingType]||HEARING.other;return`<div onclick="openEvt('${evt.id}')" style="font-size:10px;border-radius:4px;padding:2px 5px;margin-bottom:2px;background:${h.bg};color:${h.color};cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;border-left:2px solid ${h.color}">${evt.time} ${evt.clientName}</div>`;}).join("")}
+          ${de.length>3?`<div style="font-size:9px;color:${C.muted};padding-left:4px;font-weight:600">+${de.length-3} more</div>`:""}
+        </div>`;
+      }).join("")}
+    </div>
+  </div>`;
+}
+
+function agendaView(){
+  const sorted=[...S.events].sort((a,b)=>a.date?.localeCompare(b.date)||a.time?.localeCompare(b.time));
+  const up=sorted.filter(e=>e.date>=todayStr);
+  const past=sorted.filter(e=>e.date<todayStr).reverse();
+  const row=(r,dim)=>{
+    const evt=evtFromRow(r);
+    const h=HEARING[evt.hearingType]||HEARING.other;
+    const d=parseInt(evt.date.split("-")[2]),m=parseInt(evt.date.split("-")[1])-1;
+    return`<div onclick="openEvt('${evt.id}')" style="background:${C.card};border-radius:12px;padding:14px 16px;border:1px solid ${C.border};display:flex;gap:14px;align-items:center;margin-bottom:7px;border-left:4px solid ${h.color};opacity:${dim?.55:1};cursor:pointer">
+      <div style="text-align:center;min-width:38px">
+        <div style="font-size:22px;font-weight:800;color:${C.text};line-height:1">${d}</div>
+        <div style="font-size:10px;color:${C.muted};font-weight:700;letter-spacing:.4px">${MONTHS[m].slice(0,3).toUpperCase()}</div>
+      </div>
+      <div style="width:1px;background:${C.border};align-self:stretch"></div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px;flex-wrap:wrap">
+          <span style="font-weight:800;font-size:14px">${evt.clientName}</span>
+          <span style="font-size:11px;padding:2px 9px;border-radius:99px;background:${h.bg};color:${h.color};font-weight:700">${h.label}</span>
+        </div>
+        <div style="font-size:12px;color:${C.muted};font-weight:500">⏰ ${evt.time} · 🏛 ${evt.courthouse||"—"} Rm ${evt.courtroom||"—"} · 📍 ${evt.jurisdiction||"—"}</div>
+        ${evt.notes?`<div style="font-size:11px;color:${C.muted};margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">📝 ${evt.notes}</div>`:""}
+      </div>
+      <div style="font-size:12px;color:${C.muted};text-align:right;flex-shrink:0;font-weight:600">${evt.clientFile||""}</div>
+    </div>`;
+  };
+  return`<div>
+    <div style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.8px;margin-bottom:10px;text-transform:uppercase">Upcoming</div>
+    ${up.length?up.map(e=>row(e,false)).join(""):`<div style="color:${C.muted};font-size:14px;padding:20px 0;font-weight:500">No upcoming court dates.</div>`}
+    ${past.length?`<div style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.8px;margin:18px 0 10px;text-transform:uppercase">Past</div>${past.slice(0,5).map(e=>row(e,true)).join("")}`:""}
+  </div>`;
+}
+
+function clientsView(){
+  const names=[...new Set(S.events.map(e=>e.client_name))].filter(Boolean).sort();
+  if(!names.length)return`<div style="color:${C.muted};font-size:14px;font-weight:500">No clients yet.</div>`;
+  return names.map(name=>{
+    const ev=S.events.filter(e=>e.client_name===name).sort((a,b)=>a.date?.localeCompare(b.date));
+    const up=ev.filter(e=>e.date>=todayStr);
+    return`<div style="background:${C.card};border-radius:12px;border:1px solid ${C.border};padding:16px 18px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div>
+          <div style="font-weight:800;font-size:15px">${name}</div>
+          <div style="font-size:12px;color:${C.muted};margin-top:2px;font-weight:500">File ${ev[0]?.client_file||"N/A"} · ${ev.length} appearance${ev.length!==1?"s":""}</div>
+        </div>
+        ${up.length?`<span style="padding:4px 12px;background:${C.primaryL};color:${C.primary};border-radius:99px;font-size:12px;font-weight:700">${up.length} upcoming</span>`:""}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${ev.slice(0,6).map(e=>{const h=HEARING[e.hearing_type]||HEARING.other;return`<span onclick="openEvt('${e.id}')" style="font-size:11px;padding:4px 10px;border-radius:6px;background:${h.bg};color:${h.color};font-weight:700;cursor:pointer">${h.label} — ${e.date}</span>`;}).join("")}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function settingsView(){
+  const isAdmin=S.profile?.role==="admin";
+  return`<div style="max-width:600px">
+    <div style="background:${C.card};border-radius:14px;border:1px solid ${C.border};padding:22px;margin-bottom:14px">
+      <div style="font-weight:800;font-size:15px;margin-bottom:4px">Your Account</div>
+      <div style="font-size:13px;color:${C.muted};margin-bottom:16px;font-weight:500">Signed in as <strong>${S.session?.user?.email}</strong></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="padding:14px;background:${C.bg};border-radius:10px;border:1px solid ${C.border}">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Name</div>
+          <div style="font-size:14px;font-weight:700;color:${C.text}">${S.profile?.full_name||"—"}</div>
+        </div>
+        <div style="padding:14px;background:${C.bg};border-radius:10px;border:1px solid ${C.border}">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Role</div>
+          <div style="font-size:14px;font-weight:700;color:${C.primary}">${S.profile?.role||"—"}</div>
+        </div>
+      </div>
+    </div>
+
+    ${isAdmin?`
+    <div style="background:${C.card};border-radius:14px;border:1px solid ${C.border};padding:22px;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <div style="font-weight:800;font-size:15px">Team Members</div>
+          <div style="font-size:12px;color:${C.muted};margin-top:2px;font-weight:500">Manage roles for everyone in the firm.</div>
+        </div>
+        <button onclick="loadAllProfiles()" style="padding:6px 12px;border:1px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.muted};font-size:12px;font-weight:600">Refresh</button>
+      </div>
+      ${allProfiles.length===0?`<div style="color:${C.muted};font-size:13px">Click Refresh to load team members.</div>`:
+        allProfiles.map(p=>`<div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid ${C.border}">
+          <div style="width:34px;height:34px;border-radius:50%;background:${C.primaryL};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:${C.primary};flex-shrink:0">${(p.full_name||p.email||"?")[0].toUpperCase()}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.full_name||"—"}</div>
+            <div style="font-size:11px;color:${C.muted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.email}</div>
+          </div>
+          ${p.id===S.session?.user?.id?`<span style="font-size:11px;color:${C.muted};font-weight:600">You</span>`:
+          `<select onchange="updateRole('${p.id}',this.value)" style="padding:5px 8px;border:1.5px solid ${C.border};border-radius:7px;background:${C.bg};color:${C.text};font-size:12px;font-weight:600">
+            <option value="admin" ${p.role==="admin"?"selected":""}>Admin</option>
+            <option value="lawyer" ${p.role==="lawyer"?"selected":""}>Lawyer</option>
+            <option value="viewer" ${p.role==="viewer"?"selected":""}>Viewer</option>
+          </select>`}
+        </div>`).join("")}
+    </div>
+
+    <div style="background:${C.card};border-radius:14px;border:1px solid ${C.border};padding:22px">
+      <div style="font-weight:800;font-size:15px;margin-bottom:4px">Firm Access Code</div>
+      <div style="font-size:13px;color:${C.muted};margin-bottom:12px;font-weight:500">Share this code with new team members so they can create an account.</div>
+      <div style="background:${C.bg};border:1.5px dashed ${C.border};border-radius:10px;padding:14px;font-size:18px;font-weight:800;color:${C.text};letter-spacing:2px;text-align:center">${FIRM_CODE}</div>
+    </div>`:""}
+  </div>`;
+}
+
+function openEvt(id){
+  const found=S.events.find(e=>e.id===id);
+  set({selectedEvent:found||null});
+}
+
+function eventModal(){
+  const row=S.selectedEvent;if(!row)return"";
+  const evt=evtFromRow(row);
+  const h=HEARING[evt.hearingType]||HEARING.other;
+  const canDelete=["admin","lawyer"].includes(S.profile?.role);
+  const fields=[
+    ["Date & Time",`${fmtDate(evt.date)} at ${evt.time}`],
+    ["Courthouse",evt.courthouse],
+    ["Courtroom",evt.courtroom?`Courtroom ${evt.courtroom}`:"—"],
+    ["Jurisdiction",evt.jurisdiction],
+    ["Judge",evt.judge],
+    ["Attendees",evt.attendees==="all"?"All staff":evt.attendees==="lawyers"?"Lawyers only":evt.attendees||"—"],
+  ];
+  return`<div onclick="set({selectedEvent:null})" style="position:fixed;inset:0;background:rgba(15,23,42,.4);display:flex;align-items:center;justify-content:center;z-index:200">
+    <div onclick="event.stopPropagation()" style="background:${C.card};border-radius:16px;width:460px;max-width:94vw;max-height:90vh;overflow:auto;box-shadow:0 24px 56px rgba(0,0,0,.18)">
+      <div style="padding:20px 22px;background:${h.bg};border-bottom:1px solid ${C.border};position:relative">
+        <div style="font-size:10px;font-weight:800;letter-spacing:1px;color:${h.color};margin-bottom:4px;text-transform:uppercase">${h.label}</div>
+        <div style="font-size:19px;font-weight:800;color:${C.text}">${evt.clientName}</div>
+        <div style="font-size:12px;color:${C.muted};margin-top:2px;font-weight:500">File ${evt.clientFile||"N/A"}</div>
+        <button onclick="set({selectedEvent:null})" style="position:absolute;top:16px;right:14px;background:${C.card};border:1px solid ${C.border};border-radius:8px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:${C.muted};font-size:16px">✕</button>
+      </div>
+      <div style="padding:20px 22px">
+        ${fields.map(([l,v])=>`<div style="margin-bottom:13px"><div style="font-size:10px;font-weight:700;color:${C.muted};letter-spacing:.7px;margin-bottom:3px;text-transform:uppercase">${l}</div><div style="font-size:14px;font-weight:600;color:${C.text}">${v||"—"}</div></div>`).join("")}
+        ${evt.notes?`<div style="margin-bottom:14px"><div style="font-size:10px;font-weight:700;color:${C.muted};letter-spacing:.7px;margin-bottom:4px;text-transform:uppercase">Notes</div><div style="font-size:13px;color:${C.text};padding:11px;background:${C.bg};border-radius:9px;line-height:1.6;font-weight:500">${evt.notes}</div></div>`:""}
+        ${canDelete?`<button onclick="deleteEvent('${evt.id}')" style="padding:7px 14px;background:${C.redL};color:${C.red};border:1px solid #FCA5A5;border-radius:8px;font-size:12px;font-weight:700">Remove Event</button>`:""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function addModal(){
+  if(!S.showAdd)return"";
+  const f=S.addForm;
+  const inp=(key,lbl,type="text")=>`<div>
+    <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">${lbl}</div>
+    <input type="${type}" value="${f[key]||""}" oninput="S.addForm['${key}']=this.value" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-weight:500;font-size:13px">
+  </div>`;
+  return`<div onclick="set({showAdd:false})" style="position:fixed;inset:0;background:rgba(15,23,42,.4);display:flex;align-items:center;justify-content:center;z-index:200">
+    <div onclick="event.stopPropagation()" style="background:${C.card};border-radius:16px;width:500px;max-width:94vw;max-height:92vh;overflow:auto;box-shadow:0 24px 56px rgba(0,0,0,.18)">
+      <div style="padding:18px 22px;border-bottom:1px solid ${C.border};display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:800;font-size:16px">Add Court Event</div>
+        <button onclick="set({showAdd:false})" style="background:${C.bg};border:1px solid ${C.border};border-radius:8px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:${C.muted};font-size:16px">✕</button>
+      </div>
+      <div style="padding:22px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:11px">
+          <div style="grid-column:span 2">${inp("clientName","Client Name *")}</div>
+          ${inp("clientFile","File Number")}${inp("date","Date *","date")}
+          ${inp("time","Time","time")}${inp("courthouse","Courthouse")}
+          ${inp("courtroom","Courtroom #")}${inp("jurisdiction","Jurisdiction")}
+          ${inp("judge","Judge")}
+        </div>
+        <div style="margin-bottom:11px">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Hearing Type</div>
+          <select onchange="S.addForm.hearingType=this.value" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-weight:500;font-size:13px">
+            ${Object.entries(HEARING).map(([k,v])=>`<option value="${k}" ${f.hearingType===k?"selected":""}>${v.label}</option>`).join("")}
+          </select>
+        </div>
+        <div style="margin-bottom:11px">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Who Should Attend</div>
+          <select onchange="S.addForm.attendees=this.value" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-weight:500;font-size:13px">
+            <option value="all" ${f.attendees==="all"?"selected":""}>All Staff</option>
+            <option value="lawyers" ${f.attendees==="lawyers"?"selected":""}>Lawyers Only</option>
+            <option value="specific" ${f.attendees==="specific"?"selected":""}>Specific Person(s)</option>
+          </select>
+        </div>
+        <div style="margin-bottom:20px">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Notes</div>
+          <textarea oninput="S.addForm.notes=this.value" rows="2" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-weight:500;font-size:13px">${f.notes||""}</textarea>
+        </div>
+        <button onclick="addEvent()" style="width:100%;padding:11px;background:${C.primary};color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;box-shadow:0 2px 8px rgba(67,97,238,.28)">Add to Calendar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function toastEl(){
+  if(!S.toast)return"";
+  const isErr=S.toast.type==="error";
+  return`<div style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:${isErr?"#1E293B":"#1E293B"};color:#fff;padding:12px 20px;border-radius:12px;font-size:13px;font-weight:700;box-shadow:0 8px 24px rgba(0,0,0,.18);z-index:999;display:flex;align-items:center;gap:8px;white-space:nowrap">
+    ${isErr?`<svg width=14 height=14 viewBox="0 0 24 24" fill="none" stroke="${C.red}" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`:`<svg width=14 height=14 viewBox="0 0 24 24" fill="none" stroke="${C.green}" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg>`}
+    ${S.toast.msg}
+  </div>`;
+}
+
+function render(){
+  const root=document.getElementById("root");
+  if(!root)return;
+
+  if(!S.session){
+    root.innerHTML=`<div style="min-height:100vh">${authView()}</div>${toastEl()}`;
+    return;
+  }
+
+  const views={calendar:calendarView,agenda:agendaView,clients:clientsView,settings:settingsView};
+  root.innerHTML=`
+    <div style="display:flex;height:100vh;background:${C.bg}">
+      ${sidebar()}
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0">
+        ${topbar()}
+        <div style="flex:1;overflow:auto;padding:20px">${views[S.view]?.()}</div>
+      </div>
+    </div>
+    ${eventModal()}
+    ${addModal()}
+    ${toastEl()}`;
+}
+
+init();
+</script>
+</body>
+</html>
