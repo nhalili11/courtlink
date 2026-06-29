@@ -28,7 +28,14 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const SIGNUP_CODE  = "lawfirmcode"; // gate for creating an account
 
 const { createClient } = supabase;
-const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    storage: window.localStorage,
+    storageKey: "courtlink-auth",
+  }
+});
 
 // ─── THEME ─────────────────────────────────────────────────────────────────
 const savedTheme = JSON.parse(localStorage.getItem("cl-theme")||"{}");
