@@ -124,7 +124,7 @@ async function signUp(){
   set({authLoading:true,authError:""});
   // if a firm invite code was entered, verify it exists before creating the account
   if(code.trim()){
-    const {data:firm}=await db.from("firms").select("id,name").eq("invite_code",code.trim()).maybeSingle();
+    const {data:firm}=await db.from("firms").select("id,name").ilike("invite_code",code.trim()).maybeSingle();
     if(!firm){set({authLoading:false,authError:"That firm invite code wasn't found. Check it and try again."});return;}
     // remember it so we can auto-join after the account is active
     localStorage.setItem("courtlink-pending-join",code.trim());
@@ -140,7 +140,7 @@ async function signUp(){
 async function processPendingJoin(){
   const code=localStorage.getItem("courtlink-pending-join");
   if(!code)return;
-  const {data:firm}=await db.from("firms").select("*").eq("invite_code",code).maybeSingle();
+  const {data:firm}=await db.from("firms").select("*").ilike("invite_code",code).maybeSingle();
   if(firm){
     const {data:existing}=await db.from("firm_members").select("id").eq("firm_id",firm.id).eq("user_id",S.session.user.id).maybeSingle();
     if(!existing){
@@ -205,7 +205,7 @@ async function loadFirmMembers(firmId){
 async function createFirm(){
   const {newFirmName:name,newFirmCode:code,newFirmLogo:logo,newFirmColor:nameColor,newFirmPrimary:primary}=S;
   if(!name||!code){showToast("Name and invite code are required.","error");return;}
-  const {data:existing}=await db.from("firms").select("id").eq("invite_code",code).single();
+  const {data:existing}=await db.from("firms").select("id").ilike("invite_code",code).maybeSingle();
   if(existing){showToast("That invite code is already taken. Choose another.","error");return;}
   const {data:firm,error}=await db.from("firms").insert({name,logo_url:logo,primary_color:primary,name_color:nameColor,invite_code:code,created_by:S.session.user.id}).select().single();
   if(error){showToast("Error: "+error.message,"error");return;}
@@ -218,7 +218,7 @@ async function createFirm(){
 async function joinFirm(){
   const code=S.joinCode.trim();
   if(!code){showToast("Enter an invite code.","error");return;}
-  const {data:firm}=await db.from("firms").select("*").eq("invite_code",code).single();
+  const {data:firm}=await db.from("firms").select("*").ilike("invite_code",code).maybeSingle();
   if(!firm){showToast("Invite code not found.","error");return;}
   const {data:existing}=await db.from("firm_members").select("id").eq("firm_id",firm.id).eq("user_id",S.session.user.id).single();
   if(existing){showToast("You're already a member of this firm.","error");return;}
