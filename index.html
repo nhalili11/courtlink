@@ -92,6 +92,13 @@ for(let h=7;h<=21;h++)for(let m=0;m<60;m+=15){
   TIME_OPTIONS.push({val:`${hh}:${mm}`,label:`${h12}:${mm} ${ampm}`});
 }
 
+// date helpers for day/week views
+const isoOf=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const parseISO=s=>new Date(s+"T12:00:00");
+const addDays=(s,n)=>{const d=parseISO(s);d.setDate(d.getDate()+n);return isoOf(d);};
+const startOfWeek=s=>{const d=parseISO(s);d.setDate(d.getDate()-d.getDay());return isoOf(d);};
+const time12=t=>{if(!t)return"";const p=t.split(":");const h=+p[0],m=+p[1];const ap=h<12?"AM":"PM";const h12=h%12||12;return `${h12}:${String(m).padStart(2,"0")} ${ap}`;};
+
 // Ontario court locations (Ontario Court of Justice + Superior Court of Justice sites)
 const ONTARIO_COURTS=[
 "Toronto – Old City Hall (OCJ)","Toronto – College Park (OCJ)","Toronto – 1000 Finch Ave W (OCJ)","Toronto – 2201 Finch Ave W (OCJ)","Toronto – 311 Jarvis St (Youth, OCJ)","Toronto – 47 Sheppard Ave E (OCJ)","Toronto – Scarborough (OCJ)","Toronto – North York (OCJ)","Toronto – Etobicoke (OCJ)","Toronto – 361 University Ave (SCJ)","Toronto – 330 University Ave (SCJ)",
@@ -109,6 +116,7 @@ let S={
   authMode:"login", authEmail:"", authPassword:"", authName:"", authCode:"", authError:"", authLoading:false,
   firms:[], currentFirmId:null, currentFirm:null, firmMembers:[],
   view:"calendar", events:[], yr:now.getFullYear(), mo:now.getMonth(),
+  calView:"month", cursor:todayStr,
   sidebarOpen:true, firmDropOpen:false,
   selectedEvent:null, showAdd:false,
   addForm:{clientName:"",clientFile:"",date:todayStr,time:"09:00",hearingType:"bail",jurisdiction:"",courthouse:"",courtroom:"",judge:"",attendees:"all",notes:"",calendarType:"firm"},
@@ -577,25 +585,92 @@ function sidebar(){
 
 // ─── TOPBAR ────────────────────────────────────────────────────────────────
 function topbar(){
-  const {view,yr,mo}=S;
-  const isMember=!!S.currentFirmId;
-  const canEdit=isMember||true; // any logged-in member can add firm or personal events
+  const {view}=S;
+  const canEdit=true; // any logged-in member can add firm or personal events
   const vL={agenda:"Agenda",clients:"Clients",team:"Team",settings:"Settings"};
-  return`<div style="padding:12px 20px;background:#fff;border-bottom:1px solid ${C.border};display:flex;align-items:center;gap:14px;flex-shrink:0">
+  const toggle=`<div style="display:flex;border:1px solid ${C.border};border-radius:8px;overflow:hidden">
+    ${["day","week","month"].map(m=>`<button onclick="set({calView:'${m}'})" style="padding:6px 13px;border:none;background:${S.calView===m?C.primary:'#fff'};color:${S.calView===m?'#fff':C.muted};font-size:12px;font-weight:700;text-transform:capitalize">${m}</button>`).join("")}
+  </div>`;
+  return`<div style="padding:12px 20px;background:#fff;border-bottom:1px solid ${C.border};display:flex;align-items:center;gap:12px;flex-shrink:0">
     ${view==="calendar"?`<div style="display:flex;align-items:center;gap:8px">
-      <button onclick="navMonth(-1)" style="width:29px;height:29px;border:1px solid ${C.border};border-radius:8px;background:transparent;display:flex;align-items:center;justify-content:center;color:${C.text}"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15,18 9,12 15,6"/></svg></button>
-      <span style="font-size:15px;font-weight:800;min-width:166px;text-align:center">${MONTHS[mo]} ${yr}</span>
-      <button onclick="navMonth(1)" style="width:29px;height:29px;border:1px solid ${C.border};border-radius:8px;background:transparent;display:flex;align-items:center;justify-content:center;color:${C.text}"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9,18 15,12 9,6"/></svg></button>
+      <button onclick="navCal(-1)" style="width:29px;height:29px;border:1px solid ${C.border};border-radius:8px;background:transparent;display:flex;align-items:center;justify-content:center;color:${C.text}"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15,18 9,12 15,6"/></svg></button>
+      <span style="font-size:14px;font-weight:800;min-width:${S.calView==="day"?210:S.calView==="week"?180:150}px;text-align:center">${calTitle()}</span>
+      <button onclick="navCal(1)" style="width:29px;height:29px;border:1px solid ${C.border};border-radius:8px;background:transparent;display:flex;align-items:center;justify-content:center;color:${C.text}"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9,18 15,12 9,6"/></svg></button>
+      <button onclick="goToday()" style="padding:6px 12px;border:1px solid ${C.border};border-radius:8px;background:transparent;color:${C.text};font-size:12px;font-weight:700">Today</button>
+      ${toggle}
     </div>`:`<span style="font-size:15px;font-weight:800">${vL[view]||""}</span>`}
     <div style="flex:1"></div>
     ${canEdit?`<button onclick="set({showAdd:true})" style="display:flex;align-items:center;gap:6px;padding:8px 15px;background:${C.primary};color:#fff;border:none;border-radius:9px;font-weight:700;font-size:13px"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Event</button>`:""}
   </div>`;
 }
+function calTitle(){
+  if(S.calView==="month")return `${MONTHS[S.mo]} ${S.yr}`;
+  if(S.calView==="day"){const d=parseISO(S.cursor);return d.toLocaleDateString("en-CA",{weekday:"long",month:"long",day:"numeric"});}
+  const start=startOfWeek(S.cursor),end=addDays(start,6);
+  const s=parseISO(start),e=parseISO(end);
+  return `${MONTHS[s.getMonth()].slice(0,3)} ${s.getDate()} – ${MONTHS[e.getMonth()].slice(0,3)} ${e.getDate()}`;
+}
+function navCal(dir){
+  if(S.calView==="month"){let m=S.mo+dir,y=S.yr;if(m<0){m=11;y--;}if(m>11){m=0;y++;}set({mo:m,yr:y});}
+  else if(S.calView==="week")set({cursor:addDays(S.cursor,dir*7)});
+  else set({cursor:addDays(S.cursor,dir)});
+}
+function goToday(){const d=new Date();set({cursor:todayStr,yr:d.getFullYear(),mo:d.getMonth()});}
 function navMonth(d){let m=S.mo+d,y=S.yr;if(m<0){m=11;y--;}if(m>11){m=0;y++;}set({mo:m,yr:y});}
 function evtFrom(r){return{id:r.id,clientName:r.client_name,clientFile:r.client_file,date:r.date,time:r.time,hearingType:r.hearing_type,jurisdiction:r.jurisdiction,courthouse:r.courthouse,courtroom:r.courtroom,judge:r.judge,attendees:r.attendees,notes:r.notes,calType:r.calendar_type};}
 
 // ─── CALENDAR ──────────────────────────────────────────────────────────────
 function calendarView(){
+  if(S.calView==="day")return dayView();
+  if(S.calView==="week")return weekView();
+  return monthView();
+}
+
+function dayView(){
+  const ds=S.cursor;
+  const de=S.events.filter(e=>e.date===ds).sort((a,b)=>a.time?.localeCompare(b.time));
+  const hours=[];for(let h=7;h<=21;h++)hours.push(h);
+  const chip=(row)=>{const e=evtFrom(row);const h=HEARING[e.hearingType]||HEARING.other;return`<div onclick="openEvt('${e.id}')" style="background:${e.calType==="personal"?"#F8FAFC":h.bg};border-left:3px solid ${e.calType==="personal"?C.muted:h.color};border-radius:6px;padding:7px 10px;margin-bottom:5px;cursor:pointer">
+    <div style="font-weight:800;font-size:13px;color:${C.text}">${e.calType==="personal"?"👤 ":""}${time12(e.time)} · ${e.clientName}</div>
+    <div style="font-size:11px;color:${h.color};font-weight:700;margin-top:1px">${h.label}${e.courtroom?` · Rm ${e.courtroom}`:""}${e.courthouse?` · ${e.courthouse}`:""}</div>
+  </div>`;};
+  return`<div style="background:#fff;border:1px solid ${C.border};border-radius:12px;overflow:hidden">
+    ${hours.map(hr=>{
+      const hourEvents=de.filter(e=>parseInt(e.time)===hr);
+      const lbl=`${hr%12||12} ${hr<12?"AM":"PM"}`;
+      return`<div style="display:flex;border-top:1px solid ${C.border};min-height:52px">
+        <div style="width:66px;flex-shrink:0;padding:7px 8px;font-size:11px;font-weight:700;color:${C.muted};text-align:right;border-right:1px solid ${C.border}">${lbl}</div>
+        <div style="flex:1;padding:6px 8px">${hourEvents.map(chip).join("")}</div>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function weekView(){
+  const start=startOfWeek(S.cursor);
+  const days=[];for(let i=0;i<7;i++)days.push(addDays(start,i));
+  return`<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">
+    ${days.map(ds=>{
+      const d=parseISO(ds);
+      const isToday=ds===todayStr;
+      const de=S.events.filter(e=>e.date===ds).sort((a,b)=>a.time?.localeCompare(b.time));
+      return`<div style="background:#fff;border:1.5px solid ${isToday?C.primary:C.border};border-radius:10px;min-height:340px;display:flex;flex-direction:column">
+        <div style="text-align:center;padding:8px 4px;border-bottom:1px solid ${C.border};background:${isToday?C.primary+"10":"transparent"}">
+          <div style="font-size:10px;font-weight:700;color:${C.muted};letter-spacing:.3px">${DAYS[d.getDay()].toUpperCase()}</div>
+          <div style="font-size:16px;font-weight:800;color:${isToday?C.primary:C.text};margin-top:1px">${d.getDate()}</div>
+        </div>
+        <div style="flex:1;padding:5px;overflow:auto">
+          ${de.length?de.map(row=>{const e=evtFrom(row);const h=HEARING[e.hearingType]||HEARING.other;return`<div onclick="openEvt('${e.id}')" style="font-size:10px;border-radius:5px;padding:4px 6px;margin-bottom:4px;background:${e.calType==="personal"?"#F8FAFC":h.bg};color:${h.color};cursor:pointer;font-weight:700;border-left:2px solid ${e.calType==="personal"?C.muted:h.color}">
+            <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${time12(e.time)}</div>
+            <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${C.text}">${e.clientName}</div>
+          </div>`;}).join(""):`<div style="font-size:10px;color:${C.muted};text-align:center;padding-top:12px">—</div>`}
+        </div>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function monthView(){
   const {events,yr,mo}=S;
   const total=getDays(yr,mo),first=getFirst(yr,mo);
   const cells=[];
@@ -614,7 +689,7 @@ function calendarView(){
         const isToday=ds===todayStr;
         const de=evtsOn(day);
         return`<div style="min-height:105px;background:#fff;border-radius:10px;padding:6px 5px;border:1.5px solid ${isToday?C.primary:C.border}">
-          <div style="width:24px;height:24px;border-radius:50%;background:${isToday?C.primary:"transparent"};color:${isToday?"#fff":C.text};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:${isToday?800:600};margin-bottom:3px">${day}</div>
+          <div onclick="set({cursor:'${ds}',calView:'day'})" title="View this day" style="width:24px;height:24px;border-radius:50%;background:${isToday?C.primary:"transparent"};color:${isToday?"#fff":C.text};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:${isToday?800:600};margin-bottom:3px;cursor:pointer">${day}</div>
           ${de.slice(0,3).map(row=>{const e=evtFrom(row);const h=HEARING[e.hearingType]||HEARING.other;return`<div onclick="openEvt('${e.id}')" style="font-size:10px;border-radius:4px;padding:2px 5px;margin-bottom:2px;background:${e.calType==="personal"?"#F8FAFC":h.bg};color:${h.color};cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;border-left:2px solid ${e.calType==="personal"?C.muted:h.color}">${e.calType==="personal"?"👤 ":""}${e.time} ${e.clientName}</div>`;}).join("")}
           ${de.length>3?`<div style="font-size:9px;color:${C.muted};padding-left:4px;font-weight:600">+${de.length-3} more</div>`:""}
         </div>`;
@@ -646,10 +721,24 @@ function agendaView(){
       <div style="font-size:11px;color:${C.muted};flex-shrink:0;font-weight:600">${e.clientFile||""}</div>
     </div>`;
   };
+  // group upcoming events by day
+  const groups={};
+  up.forEach(e=>{(groups[e.date]=groups[e.date]||[]).push(e);});
+  const dates=Object.keys(groups).sort();
+  const dayHeader=ds=>{
+    const isToday=ds===todayStr;
+    const isTomorrow=ds===addDays(todayStr,1);
+    const label=isToday?"Today":isTomorrow?"Tomorrow":fmtDate(ds);
+    return`<div style="display:flex;align-items:center;gap:8px;margin:18px 0 9px">
+      <span style="font-size:13px;font-weight:800;color:${isToday?C.primary:C.text}">${label}</span>
+      ${!isToday&&!isTomorrow?"":`<span style="font-size:11px;color:${C.muted};font-weight:600">${fmtDate(ds)}</span>`}
+      <span style="font-size:11px;color:${C.muted};font-weight:600;background:${C.bg};padding:1px 8px;border-radius:99px;border:1px solid ${C.border}">${groups[ds].length}</span>
+      <div style="flex:1;height:1px;background:${C.border}"></div>
+    </div>`;
+  };
   return`<div>
-    <div style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.8px;margin-bottom:10px;text-transform:uppercase">Upcoming</div>
-    ${up.length?up.map(e=>row(e,false)).join(""):`<div style="color:${C.muted};font-size:14px;padding:20px 0">No upcoming court dates.</div>`}
-    ${past.length?`<div style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.8px;margin:18px 0 10px;text-transform:uppercase">Past</div>${past.slice(0,5).map(e=>row(e,true)).join("")}`:""}
+    ${dates.length?dates.map(ds=>`${dayHeader(ds)}${groups[ds].map(e=>row(e,false)).join("")}`).join(""):`<div style="color:${C.muted};font-size:14px;padding:20px 0">No upcoming court dates.</div>`}
+    ${past.length?`<div style="font-size:11px;font-weight:700;color:${C.muted};letter-spacing:.8px;margin:24px 0 10px;text-transform:uppercase">Recent Past</div>${past.slice(0,5).map(e=>row(e,true)).join("")}`:""}
   </div>`;
 }
 
