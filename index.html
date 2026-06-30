@@ -122,13 +122,10 @@ async function signUp(){
   const {authEmail:email,authPassword:pass,authName:name,authCode:code}=S;
   if(!email||!pass||!name){set({authError:"All fields are required."});return;}
   set({authLoading:true,authError:""});
-  // if a firm invite code was entered, verify it exists before creating the account
-  if(code.trim()){
-    const {data:firm}=await db.from("firms").select("id,name").ilike("invite_code",code.trim()).maybeSingle();
-    if(!firm){set({authLoading:false,authError:"That firm invite code wasn't found. Check it and try again."});return;}
-    // remember it so we can auto-join after the account is active
-    localStorage.setItem("courtlink-pending-join",code.trim());
-  }
+  // Remember the firm code so we can join AFTER the account is created and logged in.
+  // (We can't look up the firm before login — the database only lets logged-in users read it.)
+  if(code.trim()) localStorage.setItem("courtlink-pending-join",code.trim());
+  else localStorage.removeItem("courtlink-pending-join");
   const {data,error}=await db.auth.signUp({email,password:pass,options:{data:{full_name:name}}});
   if(error){set({authLoading:false,authError:error.message});return;}
   if(data.user) await db.from("profiles").upsert({id:data.user.id,email,full_name:name,role:"lawyer"},{onConflict:"id"});
@@ -144,11 +141,15 @@ async function processPendingJoin(){
   if(firm){
     const {data:existing}=await db.from("firm_members").select("id").eq("firm_id",firm.id).eq("user_id",S.session.user.id).maybeSingle();
     if(!existing){
-      await db.from("firm_members").insert({firm_id:firm.id,user_id:S.session.user.id,role:"lawyer"});
+      const {error}=await db.from("firm_members").insert({firm_id:firm.id,user_id:S.session.user.id,role:"lawyer"});
+      if(error){showToast("Couldn't join firm: "+error.message,"error");return;}
       showToast(`Joined ${firm.name}!`);
     }
+    localStorage.removeItem("courtlink-pending-join");
+  } else {
+    showToast("No firm found for that invite code.","error");
+    localStorage.removeItem("courtlink-pending-join");
   }
-  localStorage.removeItem("courtlink-pending-join");
 }
 async function signIn(){
   const {authEmail:email,authPassword:pass}=S;
