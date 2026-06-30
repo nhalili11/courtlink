@@ -92,6 +92,13 @@ for(let h=7;h<=21;h++)for(let m=0;m<60;m+=15){
   TIME_OPTIONS.push({val:`${hh}:${mm}`,label:`${h12}:${mm} ${ampm}`});
 }
 
+// Ontario court locations (Ontario Court of Justice + Superior Court of Justice sites)
+const ONTARIO_COURTS=[
+"Toronto – Old City Hall (OCJ)","Toronto – College Park (OCJ)","Toronto – 1000 Finch Ave W (OCJ)","Toronto – 2201 Finch Ave W (OCJ)","Toronto – 311 Jarvis St (Youth, OCJ)","Toronto – 47 Sheppard Ave E (OCJ)","Toronto – Scarborough (OCJ)","Toronto – North York (OCJ)","Toronto – Etobicoke (OCJ)","Toronto – 361 University Ave (SCJ)","Toronto – 330 University Ave (SCJ)",
+"Ottawa – Elgin St (OCJ/SCJ)","Hamilton – John Sopinka Courthouse","London – 80 Dundas St (OCJ)","London – 80 Dundas St (SCJ)","Windsor – 200 Chatham St","Brampton – A. Grenville & William Davis Courthouse","Mississauga – 950 Burnhamthorpe Rd W","Kitchener – 85 Frederick St","Cambridge (OCJ)","Guelph – 36 Wyndham St S","Barrie – 75 Mulcaster St","Newmarket – 50 Eagle St W","Oshawa – Durham Region Courthouse","Whitby (OCJ)","Peterborough – 70 Simcoe St","Kingston – 279 Wellington St","Belleville – 15 Bridge St W","Cornwall – 29 Second St W","Brockville (OCJ)","Pembroke (OCJ)","Perth (OCJ)","L'Orignal (OCJ)","Napanee (OCJ)","Picton (OCJ)","Cobourg – 860 William St","Lindsay – 440 Kent St W","Bracebridge – 705 Wellington St","Parry Sound (OCJ)","Sudbury – 155 Elm St","Sault Ste. Marie – 426 Queen St E","Thunder Bay – 125 Brodie St S","North Bay – 360 Plouffe St","Timmins – 101 McIntyre Rd","Kenora – 216 Water St","Fort Frances (OCJ)","Dryden (OCJ)","Kapuskasing (OCJ)","Cochrane (OCJ)","Haileybury (OCJ)","Sarnia – 700 Christina St N","Chatham – 425 Grand Ave W","St. Catharines – 59 Church St","Welland – 102 East Main St","Niagara Falls (OCJ)","Brantford – 70 Wellington St","Simcoe (OCJ)","Cayuga (OCJ)","Woodstock – 415 Hunter St","Ingersoll (OCJ)","Stratford – 30 St Andrew St","St. Thomas – 4 Wellington St","Goderich (OCJ)","Walkerton (OCJ)","Owen Sound – 611 9th Ave E","Orangeville – 10 Louisa St","Milton – 491 Steeles Ave E","Burlington (OCJ)","Bancroft (OCJ)","Gore Bay (OCJ)","Elliot Lake (OCJ)",
+"Ontario Court of Justice (general)","Superior Court of Justice (general)","Court of Appeal for Ontario"
+];
+
 // check URL for invite
 const urlParams=new URLSearchParams(window.location.search);
 const urlInviteCode=urlParams.get("join")||"";
@@ -113,6 +120,13 @@ let S={
   joinCode: urlInviteCode,
   // edit profile
   editingName:false, newName:"",
+  // clients
+  clients:[], clientMatters:[],
+  showAddClient:false,
+  clientForm:{name:"",dob:"",isYouth:false,notes:""},
+  addMatterFor:null, // client id when adding a matter
+  matterForm:{jurisdiction:"",charges:"",fileNumber:""},
+  expandedClient:null,
   toast:null,
 };
 
@@ -191,14 +205,15 @@ async function loadFirms(){
   const currentFirm=firms.find(f=>f.id===currentFirmId)||firms[0];
   currentFirmId=currentFirm?.id||null;
   set({firms,currentFirmId,currentFirm});
-  if(currentFirmId){await loadFirmMembers(currentFirmId);await loadEvents();}
+  if(currentFirmId){await loadFirmMembers(currentFirmId);await loadEvents();await loadClients();}
 }
 
 async function switchFirm(firmId){
   const firm=S.firms.find(f=>f.id===firmId);
-  set({currentFirmId:firmId,currentFirm:firm,events:[],firmDropOpen:false});
+  set({currentFirmId:firmId,currentFirm:firm,events:[],clients:[],clientMatters:[],firmDropOpen:false});
   await loadFirmMembers(firmId);
   await loadEvents();
+  await loadClients();
 }
 
 let membersLoadedFor=null;
@@ -311,10 +326,56 @@ async function deleteEvent(id){
   showToast("Event removed.");
 }
 
+// ─── CLIENTS ───────────────────────────────────────────────────────────────
+async function loadClients(){
+  if(!S.currentFirmId){set({clients:[],clientMatters:[]});return;}
+  const {data:cl}=await db.from("clients").select("*").eq("firm_id",S.currentFirmId).order("name");
+  const {data:mt}=await db.from("client_matters").select("*").eq("firm_id",S.currentFirmId);
+  set({clients:cl||[],clientMatters:mt||[]});
+}
+async function addClient(){
+  const f=S.clientForm;
+  if(!f.name.trim()){showToast("Client name is required.","error");return;}
+  const {error}=await db.from("clients").insert({
+    id:uid(),firm_id:S.currentFirmId,name:f.name.trim(),
+    date_of_birth:f.dob||null,is_youth:!!f.isYouth,notes:f.notes||null,
+    created_by:S.session.user.id
+  });
+  if(error){showToast("Failed to add client: "+error.message,"error");return;}
+  set({showAddClient:false,clientForm:{name:"",dob:"",isYouth:false,notes:""}});
+  await loadClients();
+  showToast("Client added!");
+}
+async function deleteClient(id){
+  await db.from("clients").delete().eq("id",id);
+  await loadClients();
+  set({expandedClient:null});
+  showToast("Client removed.");
+}
+async function addMatter(clientId){
+  const f=S.matterForm;
+  if(!f.jurisdiction.trim()){showToast("Jurisdiction is required.","error");return;}
+  const {error}=await db.from("client_matters").insert({
+    id:uid(),client_id:clientId,firm_id:S.currentFirmId,
+    jurisdiction:f.jurisdiction.trim(),charges:f.charges||null,file_number:f.fileNumber||null
+  });
+  if(error){showToast("Failed to add matter: "+error.message,"error");return;}
+  set({addMatterFor:null,matterForm:{jurisdiction:"",charges:"",fileNumber:""}});
+  await loadClients();
+  showToast("Charge/jurisdiction added!");
+}
+async function deleteMatter(id){
+  await db.from("client_matters").delete().eq("id",id);
+  await loadClients();
+  showToast("Removed.");
+}
+
 function subscribeRealtime(){
   db.channel("realtime-all")
     .on("postgres_changes",{event:"*",schema:"public",table:"events"},()=>loadEvents())
     .on("postgres_changes",{event:"*",schema:"public",table:"firm_members"},()=>{if(S.currentFirmId)loadFirmMembers(S.currentFirmId);})
+    .on("postgres_changes",{event:"*",schema:"public",table:"clients"},()=>loadClients())
+    .on("postgres_changes",{event:"*",schema:"public",table:"client_matters"},()=>loadClients())
     .subscribe();
 }
 
@@ -594,21 +655,124 @@ function agendaView(){
 
 // ─── CLIENTS ───────────────────────────────────────────────────────────────
 function clientsView(){
-  const names=[...new Set(S.events.map(e=>e.client_name))].filter(Boolean).sort();
-  if(!names.length)return`<div style="color:${C.muted};font-size:14px">No clients yet.</div>`;
-  return names.map(name=>{
-    const ev=S.events.filter(e=>e.client_name===name).sort((a,b)=>a.date?.localeCompare(b.date));
+  const clients=S.clients;
+  const addBtn=`<button onclick="set({showAddClient:true})" style="display:flex;align-items:center;gap:6px;padding:8px 15px;background:${C.primary};color:#fff;border:none;border-radius:9px;font-weight:700;font-size:13px"><svg width=13 height=13 viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Client</button>`;
+
+  const header=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <div style="font-size:13px;color:${C.muted}">${clients.length} client${clients.length!==1?"s":""} in ${S.currentFirm?.name||"your firm"}</div>
+    ${addBtn}
+  </div>`;
+
+  if(!clients.length) return `<div>${header}<div style="background:#fff;border:1px dashed ${C.border};border-radius:12px;padding:40px;text-align:center;color:${C.muted};font-size:14px">No clients yet. Click <strong>Add Client</strong> to create your first one.</div></div>`;
+
+  const cards=clients.map(c=>{
+    const matters=S.clientMatters.filter(m=>m.client_id===c.id);
+    const ev=S.events.filter(e=>e.client_name===c.name).sort((a,b)=>a.date?.localeCompare(b.date));
     const up=ev.filter(e=>e.date>=todayStr);
+    const expanded=S.expandedClient===c.id;
     return`<div style="background:#fff;border-radius:12px;border:1px solid ${C.border};padding:16px 18px;margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div><div style="font-weight:800;font-size:15px">${name}</div><div style="font-size:12px;color:${C.muted};margin-top:2px">File ${ev[0]?.client_file||"N/A"} · ${ev.length} appearance${ev.length!==1?"s":""}</div></div>
-        ${up.length?`<span style="padding:4px 12px;background:${C.primary}18;color:${C.primary};border-radius:99px;font-size:12px;font-weight:700">${up.length} upcoming</span>`:""}
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;cursor:pointer" onclick="set({expandedClient:'${expanded?"":c.id}'})">
+        <div style="min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-weight:800;font-size:15px">${c.name}</span>
+            ${c.is_youth?`<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;background:#FFF7ED;color:#EA580C;text-transform:uppercase;letter-spacing:.5px">Youth</span>`:`<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;background:${C.bg};color:${C.muted};text-transform:uppercase;letter-spacing:.5px">Adult</span>`}
+          </div>
+          <div style="font-size:12px;color:${C.muted};margin-top:3px">${c.date_of_birth?`DOB ${c.date_of_birth} · `:""}${matters.length} jurisdiction${matters.length!==1?"s":""} · ${ev.length} appearance${ev.length!==1?"s":""}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+          ${up.length?`<span style="padding:4px 11px;background:${C.primary}18;color:${C.primary};border-radius:99px;font-size:12px;font-weight:700">${up.length} upcoming</span>`:""}
+          <svg width=15 height=15 viewBox="0 0 24 24" fill="none" stroke="${C.muted}" stroke-width="2.5" style="transform:rotate(${expanded?180:0}deg);transition:transform .15s"><polyline points="6,9 12,15 18,9"/></svg>
+        </div>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        ${ev.slice(0,6).map(e=>{const h=HEARING[e.hearing_type]||HEARING.other;return`<span onclick="openEvt('${e.id}')" style="font-size:11px;padding:4px 10px;border-radius:6px;background:${h.bg};color:${h.color};font-weight:700;cursor:pointer">${h.label} — ${e.date}</span>`;}).join("")}
-      </div>
+
+      ${matters.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+        ${matters.map(m=>`<span style="font-size:11px;padding:4px 10px;border-radius:6px;background:${C.bg};color:${C.text};font-weight:700;border:1px solid ${C.border}">🏛 ${m.jurisdiction}${m.file_number?` · ${m.file_number}`:""}</span>`).join("")}
+      </div>`:""}
+
+      ${expanded?`<div style="margin-top:14px;border-top:1px solid ${C.border};padding-top:14px">
+        ${c.notes?`<div style="font-size:13px;color:${C.text};background:${C.bg};padding:10px 12px;border-radius:9px;margin-bottom:12px;line-height:1.5">📝 ${c.notes}</div>`:""}
+
+        <div style="font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Jurisdictions & Charges</div>
+        ${matters.length?matters.map(m=>`<div style="background:${C.bg};border:1px solid ${C.border};border-radius:9px;padding:11px 13px;margin-bottom:7px">
+          <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
+            <div style="min-width:0">
+              <div style="font-weight:700;font-size:13px">${m.jurisdiction}</div>
+              ${m.file_number?`<div style="font-size:11px;color:${C.muted};margin-top:1px">File ${m.file_number}</div>`:""}
+              ${m.charges?`<div style="font-size:12px;color:${C.text};margin-top:4px">⚖ ${m.charges}</div>`:""}
+            </div>
+            <button onclick="deleteMatter('${m.id}')" style="background:none;border:none;color:${C.muted};font-size:12px;font-weight:600;flex-shrink:0">✕</button>
+          </div>
+        </div>`).join(""):`<div style="font-size:12px;color:${C.muted};margin-bottom:8px">No jurisdictions added yet.</div>`}
+
+        ${S.addMatterFor===c.id?`<div style="background:${C.bg};border:1.5px solid ${C.primary};border-radius:10px;padding:13px;margin-top:8px">
+          <div style="margin-bottom:9px">
+            <div style="font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Jurisdiction (type to search Ontario courts)</div>
+            <input list="ont-courts" value="${S.matterForm.jurisdiction}" oninput="S.matterForm.jurisdiction=this.value" placeholder="Start typing, e.g. Toronto..." style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:#fff;color:${C.text};font-size:13px">
+          </div>
+          <div style="margin-bottom:9px">
+            <div style="font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">File Number</div>
+            <input value="${S.matterForm.fileNumber}" oninput="S.matterForm.fileNumber=this.value" placeholder="e.g. 2025-CR-0123" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:#fff;color:${C.text};font-size:13px">
+          </div>
+          <div style="margin-bottom:11px">
+            <div style="font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Charges</div>
+            <textarea oninput="S.matterForm.charges=this.value" rows="2" placeholder="e.g. Assault (s.266), Mischief under $5000" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:#fff;color:${C.text};font-size:13px">${S.matterForm.charges}</textarea>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button onclick="addMatter('${c.id}')" style="padding:8px 16px;background:${C.primary};color:#fff;border:none;border-radius:8px;font-weight:700;font-size:13px">Add</button>
+            <button onclick="set({addMatterFor:null})" style="padding:8px 14px;border:1px solid ${C.border};border-radius:8px;background:#fff;color:${C.muted};font-size:13px;font-weight:600">Cancel</button>
+          </div>
+        </div>`:`<button onclick="set({addMatterFor:'${c.id}',matterForm:{jurisdiction:'',charges:'',fileNumber:''}})" style="padding:7px 13px;border:1.5px dashed ${C.border};border-radius:8px;background:transparent;color:${C.primary};font-size:12px;font-weight:700;margin-top:4px">+ Add jurisdiction / charges</button>`}
+
+        ${ev.length?`<div style="font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">Court Dates</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${ev.slice(0,8).map(e=>{const h=HEARING[e.hearing_type]||HEARING.other;return`<span onclick="openEvt('${e.id}')" style="font-size:11px;padding:4px 10px;border-radius:6px;background:${h.bg};color:${h.color};font-weight:700;cursor:pointer">${h.label} — ${e.date}</span>`;}).join("")}</div>`:""}
+
+        <div style="margin-top:16px"><button onclick="if(confirm('Delete this client and all their info?'))deleteClient('${c.id}')" style="padding:6px 12px;background:${C.redL};color:${C.red};border:1px solid #FCA5A5;border-radius:8px;font-size:12px;font-weight:700">Delete Client</button></div>
+      </div>`:""}
     </div>`;
   }).join("");
+
+  return `<div>${header}${cards}</div>`;
+}
+
+function addClientModal(){
+  if(!S.showAddClient)return"";
+  const f=S.clientForm;
+  return`<div onclick="set({showAddClient:false})" style="position:fixed;inset:0;background:rgba(15,23,42,.4);display:flex;align-items:center;justify-content:center;z-index:200">
+    <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:460px;max-width:94vw;max-height:92vh;overflow:auto;box-shadow:0 24px 56px rgba(0,0,0,.18)">
+      <div style="padding:18px 22px;border-bottom:1px solid ${C.border};display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:800;font-size:16px">Add Client</div>
+        <button onclick="set({showAddClient:false})" style="background:${C.bg};border:1px solid ${C.border};border-radius:8px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:${C.muted};font-size:16px">✕</button>
+      </div>
+      <div style="padding:22px">
+        <div style="margin-bottom:13px">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Full Name *</div>
+          <input value="${f.name}" oninput="S.clientForm.name=this.value" placeholder="James Morrison" style="width:100%;padding:9px 12px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:14px">
+        </div>
+        <div style="margin-bottom:13px">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Date of Birth (optional)</div>
+          <input type="date" value="${f.dob}" oninput="S.clientForm.dob=this.value" style="width:100%;padding:9px 12px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:14px">
+        </div>
+        <div style="margin-bottom:13px">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Client Type</div>
+          <label onclick="S.clientForm.isYouth=!S.clientForm.isYouth;render()" style="display:flex;align-items:center;gap:10px;padding:11px 13px;border:1.5px solid ${f.isYouth?"#EA580C":C.border};border-radius:9px;background:${f.isYouth?"#FFF7ED":C.bg};cursor:pointer">
+            <div style="width:20px;height:20px;border-radius:5px;border:2px solid ${f.isYouth?"#EA580C":C.border};background:${f.isYouth?"#EA580C":"#fff"};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+              ${f.isYouth?`<svg width=12 height=12 viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5"><polyline points="20,6 9,17 4,12"/></svg>`:""}
+            </div>
+            <div>
+              <div style="font-size:13px;font-weight:700;color:${f.isYouth?"#EA580C":C.text}">This client is a Youth</div>
+              <div style="font-size:11px;color:${C.muted}">Leave unchecked for adults (the default)</div>
+            </div>
+          </label>
+        </div>
+        <div style="margin-bottom:20px">
+          <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Notes (optional)</div>
+          <textarea oninput="S.clientForm.notes=this.value" rows="2" placeholder="Any general notes about this client..." style="width:100%;padding:9px 12px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:13px">${f.notes}</textarea>
+        </div>
+        <button onclick="addClient()" style="width:100%;padding:11px;background:${C.primary};color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px">Add Client</button>
+        <div style="font-size:11px;color:${C.muted};margin-top:10px;text-align:center;line-height:1.5">After adding, open the client to add their jurisdictions and charges.</div>
+      </div>
+    </div>
+  </div>`;
 }
 
 // ─── TEAM ──────────────────────────────────────────────────────────────────
@@ -857,21 +1021,49 @@ function addModal(){
             </button>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:11px">
-          <div style="grid-column:span 2">${inp("clientName","Client / Event Name *")}</div>
-          ${inp("clientFile","File Number")}
-          ${inp("date","Date *","date")}
-          <div>
-            <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Time</div>
-            <select onchange="S.addForm.time=this.value" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:13px">
-              ${TIME_OPTIONS.map(t=>`<option value="${t.val}" ${f.time===t.val?"selected":""}>${t.label}</option>`).join("")}
-            </select>
-          </div>
-          ${inp("courthouse","Courthouse")}
-          ${inp("courtroom","Courtroom #")}
-          ${inp("jurisdiction","Jurisdiction")}
-          ${inp("judge","Judge")}
-        </div>
+        ${(()=>{
+          const typed=(f.clientName||"").trim().toLowerCase();
+          const matched=S.clients.find(c=>c.name.toLowerCase()===typed);
+          const matters=matched?S.clientMatters.filter(m=>m.client_id===matched.id):[];
+          let picker="";
+          if(matched){
+            if(matters.length>1){
+              picker=`<div style="grid-column:span 2;background:${C.primary}0c;border:1.5px solid ${C.primary};border-radius:9px;padding:10px 12px">
+                <div style="font-size:11px;font-weight:700;color:${C.primary};margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">${matched.name} has charges in ${matters.length} jurisdictions — which one?</div>
+                <select onchange="const m=S.clientMatters.find(x=>x.id===this.value);if(m){S.addForm.jurisdiction=m.jurisdiction;S.addForm.clientFile=m.file_number||'';}render()" style="width:100%;padding:8px 11px;border:1.5px solid ${C.primary};border-radius:8px;background:#fff;color:${C.text};font-size:13px;font-weight:600">
+                  <option value="">Select jurisdiction…</option>
+                  ${matters.map(m=>`<option value="${m.id}" ${f.jurisdiction===m.jurisdiction?"selected":""}>${m.jurisdiction}${m.file_number?` · ${m.file_number}`:""}</option>`).join("")}
+                </select>
+              </div>`;
+            } else if(matters.length===1){
+              picker=`<div style="grid-column:span 2;font-size:11px;color:${C.muted};background:${C.bg};border:1px solid ${C.border};border-radius:8px;padding:8px 11px">Matched client <strong>${matched.name}</strong> · ${matters[0].jurisdiction}${matched.is_youth?" · Youth":""}</div>`;
+            } else {
+              picker=`<div style="grid-column:span 2;font-size:11px;color:${C.muted};background:${C.bg};border:1px solid ${C.border};border-radius:8px;padding:8px 11px">Matched client <strong>${matched.name}</strong>${matched.is_youth?" · Youth":""}</div>`;
+            }
+          }
+          return`<div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:11px">
+            <div style="grid-column:span 2">
+              <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Client / Event Name *</div>
+              <input list="firm-clients" value="${f.clientName||""}" oninput="S.addForm.clientName=this.value" onchange="render()" placeholder="Type a client name…" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:13px;font-weight:500">
+            </div>
+            ${picker}
+            ${inp("clientFile","File Number")}
+            ${inp("date","Date *","date")}
+            <div>
+              <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Time</div>
+              <select onchange="S.addForm.time=this.value" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:13px">
+                ${TIME_OPTIONS.map(t=>`<option value="${t.val}" ${f.time===t.val?"selected":""}>${t.label}</option>`).join("")}
+              </select>
+            </div>
+            ${inp("courthouse","Courthouse")}
+            ${inp("courtroom","Courtroom #")}
+            <div style="grid-column:span 2">
+              <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Jurisdiction (type to search Ontario courts)</div>
+              <input list="ont-courts" value="${f.jurisdiction||""}" oninput="S.addForm.jurisdiction=this.value" placeholder="Start typing, e.g. Toronto…" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:13px">
+            </div>
+            ${inp("judge","Judge")}
+          </div>`;
+        })()}
         <div style="margin-bottom:11px">
           <div style="font-size:11px;font-weight:700;color:${C.muted};margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Hearing Type</div>
           <select onchange="S.addForm.hearingType=this.value" style="width:100%;padding:8px 11px;border:1.5px solid ${C.border};border-radius:8px;background:${C.bg};color:${C.text};font-size:13px">
@@ -903,6 +1095,11 @@ function toastEl(){
     ${isErr?`<svg width=14 height=14 viewBox="0 0 24 24" fill="none" stroke="${C.red}" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`:`<svg width=14 height=14 viewBox="0 0 24 24" fill="none" stroke="${C.green}" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg>`}${S.toast.msg}</div>`;
 }
 
+function datalists(){
+  return`<datalist id="ont-courts">${ONTARIO_COURTS.map(c=>`<option value="${c}">`).join("")}</datalist>
+  <datalist id="firm-clients">${S.clients.map(c=>`<option value="${c.name}">`).join("")}</datalist>`;
+}
+
 // ─── RENDER ────────────────────────────────────────────────────────────────
 function render(){
   const root=document.getElementById("root");if(!root)return;
@@ -918,7 +1115,7 @@ function render(){
         <div style="flex:1;overflow:auto;padding:20px">${views[S.view]?.()}</div>
       </div>
     </div>
-    ${eventModal()}${addModal()}${toastEl()}`;
+    ${eventModal()}${addModal()}${addClientModal()}${toastEl()}${datalists()}`;
 }
 
 init();
