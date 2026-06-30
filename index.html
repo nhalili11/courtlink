@@ -517,8 +517,8 @@ function sidebar(){
 // ─── TOPBAR ────────────────────────────────────────────────────────────────
 function topbar(){
   const {view,yr,mo}=S;
-  const myRole=S.currentFirm?.myRole||allFirmProfiles.find(m=>m.user_id===S.session?.user?.id)?.role||"viewer";
-  const canEdit=["admin","lawyer"].includes(myRole);
+  const isMember=!!S.currentFirmId;
+  const canEdit=isMember||true; // any logged-in member can add firm or personal events
   const vL={agenda:"Agenda",clients:"Clients",team:"Team",settings:"Settings"};
   return`<div style="padding:12px 20px;background:#fff;border-bottom:1px solid ${C.border};display:flex;align-items:center;gap:14px;flex-shrink:0">
     ${view==="calendar"?`<div style="display:flex;align-items:center;gap:8px">
@@ -813,7 +813,7 @@ function eventModal(){
   const row=S.selectedEvent;if(!row)return"";
   const e=evtFrom(row);const h=HEARING[e.hearingType]||HEARING.other;
   const myRole=allFirmProfiles.find(m=>m.user_id===S.session?.user?.id)?.role||"other";
-  const canDelete=["admin","lawyer"].includes(myRole)||row.created_by===S.session?.user?.id;
+  const canDelete=myRole==="admin"||row.created_by===S.session?.user?.id;
   const fields=[["Date & Time",`${fmtDate(e.date)} at ${e.time}`],["Courthouse",e.courthouse],["Courtroom",e.courtroom?`Courtroom ${e.courtroom}`:"—"],["Jurisdiction",e.jurisdiction],["Judge",e.judge],["Calendar",e.calType==="personal"?"Personal":"Firm"],["Attendees",e.attendees==="all"?"All staff":e.attendees==="lawyers"?"Lawyers only":e.attendees||"—"]];
   return`<div onclick="set({selectedEvent:null})" style="position:fixed;inset:0;background:rgba(15,23,42,.4);display:flex;align-items:center;justify-content:center;z-index:200">
     <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:460px;max-width:94vw;max-height:90vh;overflow:auto;box-shadow:0 24px 56px rgba(0,0,0,.18)">
