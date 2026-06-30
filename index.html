@@ -197,9 +197,26 @@ async function switchFirm(firmId){
   await loadEvents();
 }
 
+let membersLoadedFor=null;
+let membersLoading=false;
 async function loadFirmMembers(firmId){
-  const {data}=await db.from("firm_members").select("*, profiles(full_name,email)").eq("firm_id",firmId);
-  allFirmProfiles=data||[];
+  if(!firmId){allFirmProfiles=[];membersLoadedFor=null;return;}
+  membersLoading=true;
+  // 1. get the membership rows
+  const {data:members,error}=await db.from("firm_members").select("*").eq("firm_id",firmId);
+  if(error){membersLoading=false;showToast("Couldn't load team: "+error.message,"error");return;}
+  const list=members||[];
+  // 2. get the matching profiles in one query
+  const ids=list.map(m=>m.user_id);
+  let profs=[];
+  if(ids.length){
+    const {data:p}=await db.from("profiles").select("id,full_name,email").in("id",ids);
+    profs=p||[];
+  }
+  // 3. merge them together
+  allFirmProfiles=list.map(m=>({...m,profiles:profs.find(p=>p.id===m.user_id)||{full_name:"",email:""}}));
+  membersLoadedFor=firmId;
+  membersLoading=false;
   render();
 }
 
@@ -592,7 +609,7 @@ function clientsView(){
 
 // ─── TEAM ──────────────────────────────────────────────────────────────────
 function teamView(){
-  if(!allFirmProfiles.length){loadFirmMembers(S.currentFirmId);return`<div style="color:${C.muted};font-size:14px">Loading team...</div>`;}
+  if(membersLoadedFor!==S.currentFirmId){if(!membersLoading)loadFirmMembers(S.currentFirmId);return`<div style="color:${C.muted};font-size:14px">Loading team...</div>`;}
   const myRole=allFirmProfiles.find(m=>m.user_id===S.session?.user?.id)?.role||"other";
   const isAdmin=myRole==="admin";
   const byRole={admin:[],lawyer:[],student:[],other:[]};
