@@ -63,8 +63,12 @@ const HEARING = {
   remand:{label:"Remand",color:"#EA580C",bg:"#FFF7ED"},
   other:{label:"Other",color:"#64748B",bg:"#F8FAFC"},
 };
-const ROLE_LABELS = {admin:"Admin",lawyer:"Lawyer",student:"Student",other:"Other"};
-const ROLE_COLORS = {admin:"#4361EE",lawyer:"#D97706",student:"#059669",other:"#64748B"};
+const ROLE_LABELS = {admin:"Admin",lawyer:"Lawyer",student:"Student",legal_support:"Legal Support",office_management:"Office Management",other:"Other"};
+const ROLE_COLORS = {admin:"#4361EE",lawyer:"#D97706",student:"#059669",legal_support:"#0891B2",office_management:"#7C3AED",other:"#64748B"};
+// titles a member can pick for themselves (admin is assigned, not self-chosen)
+const SELF_ROLES = ["lawyer","student","legal_support","office_management"];
+// titles an admin can assign to anyone
+const ADMIN_ROLES = ["admin","lawyer","student","legal_support","office_management"];
 const STATUS_CONFIG = {
   online:      {label:"Online",      color:"#10B981",dot:"🟢"},
   in_court:    {label:"In Court",    color:"#EF4444",dot:"🔴"},
@@ -612,8 +616,9 @@ function teamView(){
   if(membersLoadedFor!==S.currentFirmId){if(!membersLoading)loadFirmMembers(S.currentFirmId);return`<div style="color:${C.muted};font-size:14px">Loading team...</div>`;}
   const myRole=allFirmProfiles.find(m=>m.user_id===S.session?.user?.id)?.role||"other";
   const isAdmin=myRole==="admin";
-  const byRole={admin:[],lawyer:[],student:[],other:[]};
+  const byRole={admin:[],lawyer:[],student:[],legal_support:[],office_management:[],other:[]};
   allFirmProfiles.forEach(m=>{const r=m.role||"other";(byRole[r]||byRole.other).push(m);});
+  const buildOpts=(roles,current)=>{const list=[...roles];if(!list.includes(current))list.unshift(current);return list.map(k=>`<option value="${k}" ${current===k?"selected":""}>${ROLE_LABELS[k]||k}</option>`).join("");};
 
   const memberCard=(m)=>{
     const sc=STATUS_CONFIG[m.status]||STATUS_CONFIG.offline;
@@ -636,12 +641,22 @@ function teamView(){
           <div style="font-size:10px;color:${C.muted};margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${email}</div>
         </div>
       </div>
-      ${isAdmin&&!isMe?`<div style="display:flex;gap:6px;align-items:center">
-        <select onchange="updateMemberRole('${m.user_id}',this.value)" style="flex:1;padding:5px 8px;border:1.5px solid ${C.border};border-radius:7px;background:${C.bg};color:${C.text};font-size:12px;font-weight:600">
-          ${Object.entries(ROLE_LABELS).map(([k,v])=>`<option value="${k}" ${m.role===k?"selected":""}>${v}</option>`).join("")}
-        </select>
-        <button onclick="if(confirm('Remove this member?'))removeMember('${m.user_id}')" style="padding:5px 10px;border:1px solid #FCA5A5;border-radius:7px;background:${C.redL};color:${C.red};font-size:11px;font-weight:700">Remove</button>
-      </div>`:`<div style="display:flex;align-items:center;justify-content:space-between;margin-top:${isMe?6:0}px"><span style="font-size:11px;font-weight:700;color:${ROLE_COLORS[m.role]||C.muted};background:${ROLE_COLORS[m.role]||C.muted}18;padding:2px 9px;border-radius:99px">${ROLE_LABELS[m.role]||m.role}</span></div>`}
+      ${(()=>{
+        const badge=`<div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px"><span style="font-size:11px;font-weight:700;color:${ROLE_COLORS[m.role]||C.muted};background:${ROLE_COLORS[m.role]||C.muted}18;padding:2px 9px;border-radius:99px">${ROLE_LABELS[m.role]||m.role}</span></div>`;
+        if(isAdmin&&!isMe){
+          return`<div style="display:flex;gap:6px;align-items:center;margin-top:10px">
+            <select onchange="updateMemberRole('${m.user_id}',this.value)" style="flex:1;padding:5px 8px;border:1.5px solid ${C.border};border-radius:7px;background:${C.bg};color:${C.text};font-size:12px;font-weight:600">${buildOpts(ADMIN_ROLES,m.role)}</select>
+            <button onclick="if(confirm('Remove this member?'))removeMember('${m.user_id}')" style="padding:5px 10px;border:1px solid #FCA5A5;border-radius:7px;background:${C.redL};color:${C.red};font-size:11px;font-weight:700">Remove</button>
+          </div>`;
+        }
+        if(isMe&&m.role!=="admin"){
+          return`<div style="margin-top:10px">
+            <div style="font-size:10px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Your title</div>
+            <select onchange="updateMemberRole('${m.user_id}',this.value)" style="width:100%;padding:5px 8px;border:1.5px solid ${C.border};border-radius:7px;background:${C.bg};color:${C.text};font-size:12px;font-weight:600">${buildOpts(SELF_ROLES,m.role)}</select>
+          </div>`;
+        }
+        return badge;
+      })()}
     </div>`;
   };
 
@@ -658,6 +673,8 @@ function teamView(){
     ${section("Admins",byRole.admin)}
     ${section("Lawyers",byRole.lawyer)}
     ${section("Students",byRole.student)}
+    ${section("Legal Support",byRole.legal_support)}
+    ${section("Office Management",byRole.office_management)}
     ${section("Other",byRole.other)}
   </div>`;
 }
